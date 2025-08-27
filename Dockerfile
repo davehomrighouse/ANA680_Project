@@ -19,4 +19,5 @@ ENV FLASK_APP=ham_spam_app.py:app \
 EXPOSE 5000
 
 # Start the server (flask run)
-CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:$PORT", "ham_spam_app:app"]
+
+CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:5000", "ham_spam_app:app"]
