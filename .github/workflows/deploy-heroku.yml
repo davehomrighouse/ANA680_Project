@@ -1,4 +1,4 @@
-name: Deploy to Heroku (and good luck to me)
+name: Deploy to Heroku (include some logging)
 
 on:
   push:
@@ -11,34 +11,65 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Install Heroku CLI (official action)
-      - name: Setup Heroku
-        uses: heroku/actions/setup@v2
+      # Quick sanity checks so we fail early with a clear message
+      - name: Validate required secrets
+        run: |
+          test -n "${{ secrets.HEROKU_API_KEY }}" || (echo "HEROKU_API_KEY is empty/missing" && exit 1)
+          test -n "${{ secrets.HEROKU_APP_NAME }}" || (echo "HEROKU_APP_NAME is empty/missing" && exit 1)
+          echo "Secrets appear present."
 
-      # Log in to Heroku and its container registry
-      - name: Heroku login
-        run: heroku login --interactive <<< $'q' || true
+      # Install Heroku CLI (no marketplace action)
+      - name: Install Heroku CLI
+        run: |
+          curl https://cli-assets.heroku.com/install-ubuntu.sh | sh
+          heroku --version
 
-      - name: Container registry login
+      # Verify API key works and which account it belongs to
+      - name: Who am I (Heroku)
         env:
           HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
-        run: heroku container:login
+        run: |
+          set -euo pipefail
+          echo "Checking Heroku account from API key..."
+          curl -fsS https://api.heroku.com/account \
+            -H "Accept: application/vnd.heroku+json; version=3" \
+            -H "Authorization: Bearer ${HEROKU_API_KEY}" \
+          | jq '{email: .email, id: .id}'
+          echo "OK: API key is valid."
 
-      # Build your Docker image (tag for Heroku registry)
+      # Verify the app exists AND that this API key can see it
+      - name: Check app access
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+          HEROKU_APP_NAME: ${{ secrets.HEROKU_APP_NAME }}
+        run: |
+          set -euo pipefail
+          echo "Checking app access for ${HEROKU_APP_NAME}..."
+          curl -fsS https://api.heroku.com/apps/${HEROKU_APP_NAME} \
+            -H "Accept: application/vnd.heroku+json; version=3" \
+            -H "Authorization: Bearer ${HEROKU_API_KEY}" \
+          | jq '{name: .name, owner: .owner.email, stack: .stack.name}'
+          echo "OK: Can access app ${HEROKU_APP_NAME}."
+
+      # Login to container registry
+      - name: Registry login
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+        run: |
+          echo "${HEROKU_API_KEY}" | docker login --username=_ --password-stdin registry.heroku.com
+
       - name: Build image
-        run: docker build -t registry.heroku.com/${HEROKU_APP_NAME}/web .
+        run: docker build -t registry.heroku.com/${{ secrets.HEROKU_APP_NAME }}/web .
 
-      # Push to Heroku registry
       - name: Push image
-        run: docker push registry.heroku.com/${HEROKU_APP_NAME}/web
+        run: docker push registry.heroku.com/${{ secrets.HEROKU_APP_NAME }}/web
 
-      # Release the pushed image
       - name: Release
         env:
           HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
-          HEROKU_EMAIL: ${{ secrets.HEROKU_EMAIL }}
-        run: heroku container:release web -a ${HEROKU_APP_NAME}
+        run: heroku container:release web -a ${{ secrets.HEROKU_APP_NAME }}
